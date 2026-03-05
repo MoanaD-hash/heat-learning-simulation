@@ -1,43 +1,95 @@
-Code für regression:
-import numpy as np
-import scipy.optimize as opt
+library(tidyverse)
 
-# --- Define helper functions ---
-def loglogistic(x):
-    return -np.log(1 + np.exp(-x))
+## Simulate one block of the RL task with a given parameter configuration
+rl.block = function(ap, an, b, N = 16, p1 = 0.7, p0 = 1-p1, v0 = 0.5) {
+  choices = numeric(N)
+  outcomes = numeric(N)
+  values = matrix(nrow = 2, ncol = N)
+  v = c(v0,v0) #v[1]: value of option 0; v[2]: value of option 1
+  a = c(an,ap) #a[1]: negative LR; a[2]: positive LR
+  p = c(p0,p1)
+  for (i in seq_len(N)) {
+    C = rbinom(1,1,plogis(b*(v[2]-v[1])))
+    R = rbinom(1,1,p[C+1])
+    choices[i] = C
+    outcomes[i] = R
+    values[,i] = v
+    v[C+1] = v[C+1] + a[R+1]*(R-v[C+1])
+  }
+  list(choices = choices, outcomes = outcomes, values = values)
+}
 
-def logreg_negLL(beta, y, X):
-    s1 = np.dot(y, loglogistic(X @ beta))
-    s0 = np.dot(1 - y, loglogistic(-X @ beta))
-    return -(s1 + s0)
+## Simulation parameters
+nrep = 400;
 
-# --- Check that enough choices exist ---
-if len(all_choices) > 5:  # at least 6 trials with valid choices
-    y = np.asarray(all_choices)  # 1 = chose money, 0 = chose CO₂
+a_steps = 40
+b_vec = 2^seq(0,5)
+pars = expand.grid(ap = seq(0,1,length.out = a_steps), an = seq(0,1,length.out = a_steps), b = b_vec)
 
-    # Prepare predictors
-    money_vals = np.array(all_money_values).reshape(-1, 1)
-    co2_vals = np.array(all_co2_values).reshape(-1, 1)
-    intercept = np.ones_like(money_vals)
+pars$p_corr = NA
 
-    # Build design matrix: [intercept, money, co2]
-    X = np.concatenate((intercept, money_vals, co2_vals), axis=1)
+# Packages for parallel computing
+library(future)
+library(future.apply)
 
-    # Fit logistic regression model
-    x0 = np.zeros(X.shape[1])  # starting values for optimization
-    result = opt.fmin(logreg_negLL, x0, args=(y, X), disp=False)
-    intercept_val, beta_money, beta_co2 = result
+plan(multisession(workers = 8))
 
-    # Estimate subjective value of CO₂ in €
-    subjective_value = beta_money / (-beta_co2)
-    subjective_value = round(float(subjective_value), 2)
-    subjective_value = max(0.01, min(subjective_value, 5.00))  # Clamp to [0.01, 5.00]
+pars$p_corr = future_sapply(1:nrow(pars), function(i) replicate(nrep, rl.block(pars$ap[i], pars$an[i], pars$b[i])$choices[-1] %>%  mean) %>% mean, future.seed=TRUE)
 
-    # Save to data file
-    thisExp.addData("co2_wert_in_euro", subjective_value)
-    thisExp.addData("logreg_intercept", intercept_val)
-    thisExp.addData("logreg_beta_money", beta_money)
-    thisExp.addData("logreg_beta_co2", beta_co2)
-    thisExp.nextEntry()
-else:
-    print(":warning: Not enough valid trials to compute subjective CO₂ value.")
+# for (i in 1:nrow(pars)) {
+#   curpar = c(pars$ap[i], pars$an[i], pars$b[i])
+#   pars$p_corr[i] = replicate(nrep, rl.block(ap=curpar[1],an=curpar[2],b=curpar[3])$choices %>% mean) %>% mean
+# }
+# 
+
+ggplot(data =pars, aes(x = ap, y = an, fill = p_corr)) + 
+  geom_tile() + 
+  facet_wrap(.~b, ncol = 2) +
+  scale_fill_continuous(type = "viridis")
+
+### All of the next stuff is just to give a nicer (smoothed) figure
+
+## Gaussian filter ##
+gaussfilt.ll = function(x,sigma = 1, windowfact = 3) {
+  
+  kern = dnorm(seq(floor(-windowfact*sigma),ceiling(windowfact*sigma), by = 1), sd = sigma)
+  hl = (length(kern)-1)/2
+  x2 = c( rep(x[1],hl), x, rep(x[length(x)],hl))
+  
+  y = numeric(length(x))
+  
+  for (i in 1:length(x)) {
+    x_cut = x2[i:(i + 2*hl)]
+    y[i] = x_cut %*% kern;
+  }
+  return(y)
+}
+
+sigma = 1
+windowfact = 3
+
+pars_grouped = split(pars, pars$b)
+p_matrices = lapply(pars_grouped, function(l) matrix(l$p_corr, nrow = length(unique(l$ap)), ncol = length(unique(l$an)))) %>% lapply(function(m) aws::kernsm(m)@y)
+ps_matrices = lapply(p_matrices, function(m) array_tree(m,1) %>% 
+                       lapply(function(x) gaussfilt.ll(x, sigma,windowfact)) %>% 
+                       {do.call(rbind,.)} %>% 
+                       array_tree(2) %>% 
+                       lapply(function(x) gaussfilt.ll(x, sigma,windowfact)) %>% 
+                       {do.call(cbind,.)}
+                     )
+
+for (i in 1:length(pars_grouped)) {
+  pars_grouped[[i]]$ps = c(ps_matrices[[i]])
+}
+
+pars_smoothed = do.call(rbind, pars_grouped)
+
+labels = paste0("beta = ", unique(pars_smoothed$b)); names(labels) = (unique(pars_smoothed$b))
+
+ggplot(data =pars_smoothed, aes(x = ap, y = an, fill = ps*100)) + 
+  geom_tile() + 
+  facet_wrap(.~b, ncol = 2, labeller = as_labeller(labels)) +
+  scale_fill_continuous(type = "viridis", name = "% Correct") +
+  #scale_fill_gradient(low = "#000000", high = "#FFFFFF") +
+  scale_x_continuous(name = "alpha +") + 
+  scale_y_continuous(name = "alpha -")
