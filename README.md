@@ -3,5 +3,5 @@ Simulation used to determine optimal-choice configurations
 for the RL heat experiment preregistration.
 
 Files:
-simulation_code.R
+simulation_code
 simulation_figure.png
