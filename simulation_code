@@ -1,0 +1,43 @@
+Code für regression:
+import numpy as np
+import scipy.optimize as opt
+
+# --- Define helper functions ---
+def loglogistic(x):
+    return -np.log(1 + np.exp(-x))
+
+def logreg_negLL(beta, y, X):
+    s1 = np.dot(y, loglogistic(X @ beta))
+    s0 = np.dot(1 - y, loglogistic(-X @ beta))
+    return -(s1 + s0)
+
+# --- Check that enough choices exist ---
+if len(all_choices) > 5:  # at least 6 trials with valid choices
+    y = np.asarray(all_choices)  # 1 = chose money, 0 = chose CO₂
+
+    # Prepare predictors
+    money_vals = np.array(all_money_values).reshape(-1, 1)
+    co2_vals = np.array(all_co2_values).reshape(-1, 1)
+    intercept = np.ones_like(money_vals)
+
+    # Build design matrix: [intercept, money, co2]
+    X = np.concatenate((intercept, money_vals, co2_vals), axis=1)
+
+    # Fit logistic regression model
+    x0 = np.zeros(X.shape[1])  # starting values for optimization
+    result = opt.fmin(logreg_negLL, x0, args=(y, X), disp=False)
+    intercept_val, beta_money, beta_co2 = result
+
+    # Estimate subjective value of CO₂ in €
+    subjective_value = beta_money / (-beta_co2)
+    subjective_value = round(float(subjective_value), 2)
+    subjective_value = max(0.01, min(subjective_value, 5.00))  # Clamp to [0.01, 5.00]
+
+    # Save to data file
+    thisExp.addData("co2_wert_in_euro", subjective_value)
+    thisExp.addData("logreg_intercept", intercept_val)
+    thisExp.addData("logreg_beta_money", beta_money)
+    thisExp.addData("logreg_beta_co2", beta_co2)
+    thisExp.nextEntry()
+else:
+    print(":warning: Not enough valid trials to compute subjective CO₂ value.")
