@@ -1,2 +1,7 @@
 # heat-learning-simulation
-Simulation of optimal-choice behavior for RL heat experiment
+Simulation used to determine optimal-choice configurations
+for the RL heat experiment preregistration.
+
+Files:
+simulation_code.R
+simulation_figure.png
